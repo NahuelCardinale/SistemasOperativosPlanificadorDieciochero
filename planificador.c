@@ -61,3 +61,125 @@ static int escribir_todo(int fd, const char *buf, size_t len) {
     }
     return 0;
 }
+static void encolar(int i) {
+    acts[i].estado = LISTA;
+    cola[cola_fin++] = i;
+}
+
+static void abortar_rama(int origen) {
+    int *pila = malloc((size_t)n_acts * sizeof(int));
+    int tope = 0;
+    pila[tope++] = origen;
+    while (tope > 0) {
+        int u = pila[--tope];
+        for (int k = 0; k < acts[u].n_sig; k++) {
+            int v = acts[u].sig[k];
+            if (acts[v].estado == ESPERANDO) {
+                acts[v].estado = ABORTADA;
+                printf("[ABORTADA] %s (%s) depende de una actividad fallida\n", acts[v].id, acts[v].nombre);
+                pila[tope++] = v;
+            }
+        }
+    }
+    free(pila);
+}
+
+static void codigo_hijo(int i, int fd_in, int fd_out) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+
+    Act *a = &acts[i];
+    char buf[512];
+    int mensajes = 0;
+    for (;;) {
+        ssize_t n = read(fd_in, buf, sizeof(buf));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        for (ssize_t k = 0; k < n; k++) if (buf[k] == '\n') mensajes++;
+    }
+    close(fd_in);
+    printf("  [%s] %s recibio %d mensaje(s) de sus dependencias\n", a->id, a->nombre, mensajes);
+
+    struct timespec ts = {a->dur_ms / 1000, (long)(a->dur_ms % 1000) * 1000000L};
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR);
+
+    char msg[256];
+    int len = snprintf(msg, sizeof(msg), "%.200s:OK\n", a->nombre);
+    escribir_todo(fd_out, msg, (size_t)len);
+    close(fd_out);
+    _exit(0);
+}
+
+static void fallar_lanzamiento(int i) {
+    acts[i].estado = FALLIDA;
+    printf("[FALLIDA] %s (%s) no se pudo lanzar\n", acts[i].id, acts[i].nombre);
+    abortar_rama(i);
+}
+
+static void lanzar(int i) {
+    Act *a = &acts[i];
+    int ent[2], sal[2];
+    if (pipe(ent) < 0 || pipe(sal) < 0) { fallar_lanzamiento(i); return; }
+    pid_t pid = fork();
+    if (pid < 0) { fallar_lanzamiento(i); return; }
+    
+    if (pid == 0) {
+        close(ent[1]); close(sal[0]);
+        for (int s = 0; s < corriendo; s++) close(run_fd[s]);
+        codigo_hijo(i, ent[0], sal[1]);
+    }
+    close(ent[0]); close(sal[1]);
+    for (int k = 0; k < a->n_deps; k++) {
+        char msg[256];
+        int len = snprintf(msg, sizeof(msg), "%.200s:OK\n", acts[a->deps[k]].nombre);
+        if (escribir_todo(ent[1], msg, (size_t)len) < 0) break;
+    }
+    close(ent[1]);
+    run_pid[corriendo] = pid; run_act[corriendo] = i; run_fd[corriendo++] = sal[0];
+    a->estado = CORRIENDO;
+    printf("[INICIO] %s (%s) pid=%d dur=%dms\n", a->id, a->nombre, (int)pid, a->dur_ms);
+}
+
+static void esperar_un_hijo(void) {
+    int st;
+    pid_t pid = waitpid(-1, &st, 0);
+    if (pid < 0) return;
+    int s = -1;
+    for (int k = 0; k < corriendo; k++) if (run_pid[k] == pid) { s = k; break; }
+    if (s < 0) return;
+
+    int i = run_act[s];
+    char res[256];
+    size_t rl = 0;
+    for (;;) {
+        char tmp[128];
+        ssize_t n = read(run_fd[s], tmp, sizeof(tmp));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        for (ssize_t k = 0; k < n && rl < sizeof(res) - 1; k++) res[rl++] = tmp[k];
+    }
+    res[rl] = '\0';
+    close(run_fd[s]);
+
+    corriendo--;
+    run_pid[s] = run_pid[corriendo];
+    run_act[s] = run_act[corriendo];
+    run_fd[s] = run_fd[corriendo];
+
+    if (interrumpido) return;
+
+    if (WIFEXITED(st) && WEXITSTATUS(st) == 0) {
+        acts[i].estado = TERMINADA;
+        printf("[FIN] %s (%s) OK\n", acts[i].id, acts[i].nombre);
+        for (int k = 0; k < acts[i].n_sig; k++) {
+            int v = acts[i].sig[k];
+            if (--acts[v].pendientes == 0 && acts[v].estado == ESPERANDO) encolar(v);
+        }
+    } else {
+        acts[i].estado = FALLIDA;
+        abortar_rama(i);
+    }
+}
