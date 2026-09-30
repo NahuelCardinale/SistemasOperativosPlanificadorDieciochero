@@ -1,0 +1,7 @@
+1: prender_carbon: 500: 
+2: comprar_carne: 1200: 
+3: comprar_pan: 300: 
+4: hacer_pebre: : 
+5: asar_longaniza: 800: 1,2
+6: armar_choripan: 250: 3,5
+7: servir_mesa: 100: 4,6
