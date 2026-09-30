@@ -1,7 +1,7 @@
 # Tarea 1: Planificador Dieciochero - Sistemas Operativos
 
-## Integrantes
-- [Tu Nombre / Nombre de tu compañero]
+## Integrante
+- Nahuel Sánchez
 
 ## Uso de IA y Autoría
 Por la falta de tiempo antes de la hora de entrega, usé Inteligencia Artificial para que me ayudara a armar el código final. Varias de las ideas de diseño más complejas (como la forma de manejar la memoria dinámica o cómo detener los procesos de forma segura) fueron sugeridas por la IA. 
